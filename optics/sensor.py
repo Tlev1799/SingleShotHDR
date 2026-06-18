@@ -1,0 +1,50 @@
+import torch
+
+
+def area_downsample(psf, factor):
+    """
+    psf: (3, H, W)
+    """
+
+    C, H, W = psf.shape
+
+    psf = psf.view(
+        C,
+        H // factor, factor,
+        W // factor, factor
+    )
+
+    psf = psf.mean(dim=(2, 4))  # (3, H/f, W/f)
+
+    return psf
+
+
+def crop_psf(psf, patch_size):
+
+    C, H, W = psf.shape
+
+    offset_h = (H - patch_size) // 2
+    offset_w = (W - patch_size) // 2
+
+    return psf[:, 
+               offset_h:offset_h + patch_size,
+               offset_w:offset_w + patch_size]
+
+def noramlize_psf(psf):
+    return psf / psf.sum(dim=(1, 2), keepdim=True)
+
+
+def sensor_model(psf, sampling_factor, patch_size):
+
+    """
+    Input:
+        psf: (3, H, W) from lens()
+    Output:
+        psf: (3, patch_size, patch_size)
+    """
+
+    psf = area_downsample(psf, sampling_factor)
+    psf = crop_psf(psf, patch_size)
+    psf = noramlize_psf(psf)
+
+    return psf
