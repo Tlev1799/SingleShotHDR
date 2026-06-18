@@ -8,22 +8,28 @@ from datasets.hdr_dataset import HDRDataset
 from optics.lens import LearnableLens, l2_laplacian_regularizer
 from models.deconv_net import ReconNet
 from losses.l2_gamma import l2_gamma_batch
-from utils.image_ops import psf_convolve_rgb
+from utils.image_ops import psf_convolve_rgb, save_exr, save_png, to_numpy_img, get_final_image
 from optics.sensor import sensor_model
 
-import matplotlib.pyplot as plt
+import numpy as np
+import random
 
 import os
-os.chdir('/home/projects/sipl-prj10826/DeepOpticsHDR_GPT')
+os.chdir('/home/projects/sipl-prj10826/DeepOpticsHDR_PyTorch')
 
-def evaluate(lens, cnn, loader, cfg):
+def evaluate(lens, cnn, loader, cfg, epoch):
     lens.eval()
     cnn.eval()
 
     lens.is_training = False # So height map noise is not added.
 
     total_loss = 0.0
-    display_images = True
+
+    first_save = True
+
+    # TODO:
+    # CNN seems to be identical to original paper, problem might be in the handling of optics, psf calculation and that direction,
+    # Possible issue is also just the display method but I doubt it. More likely its a mismatch between their code and ours.
 
     with torch.no_grad():
         for hdr in loader:
@@ -43,35 +49,37 @@ def evaluate(lens, cnn, loader, cfg):
             loss = l2_gamma_batch(restored, hdr)
             total_loss += loss.item()
 
-            if display_images:
-
+            if first_save:
+                first_save = False
+                index = random.randint(0, hdr.shape[0]-1)
                 import ipdb; ipdb.set_trace()
 
-                num_examples = 3
-                fig, axes = plt.subplots(num_examples, 3, figsize=(12, 4 * num_examples))
+                hdr_np = np.squeeze(to_numpy_img(hdr[index]))
+                blur_np = np.squeeze(to_numpy_img(blurred[index]))
+                rest_np = np.squeeze(to_numpy_img(restored[index]))
 
-                for i in range(num_examples):
+                # Gamma correction
+                hdr_np = np.power(np.maximum(hdr_np, 0.0), 0.5)
+                blur_np = np.power(np.maximum(blur_np, 0.0), 0.5)
+                rest_np = np.power(np.maximum(rest_np, 0.0), 0.5)
 
-                    target = hdr[i].detach().cpu().permute(1, 2, 0).numpy()
-                    inp = blurred[i].detach().cpu().permute(1, 2, 0).numpy()
-                    output = restored[i].detach().cpu().permute(1, 2, 0).numpy()
+                out_dir = cfg.images_checkpoint
+                os.makedirs(out_dir, exist_ok=True)
 
-                    axes[i, 0].imshow(target)
-                    axes[i, 0].set_title("Target")
+                # PNG (display-friendly) with exposure
+                # save_png(os.path.join(out_dir, f"epoch{epoch}_gt_exp3.png"), hdr_np, -3)
+                # save_png(os.path.join(out_dir, f"epoch{epoch}_blurred_exp3.png"), blur_np, -3)
+                # save_png(os.path.join(out_dir, f"epoch{epoch}_restored_exp3.png"), rest_np, -3)
 
-                    axes[i, 1].imshow(inp)
-                    axes[i, 1].set_title("Blurred")
+                # PNG (display-friendly) without exposure
+                save_png(os.path.join(out_dir, f"epoch{epoch}_gt.png"), hdr_np)
+                save_png(os.path.join(out_dir, f"epoch{epoch}_blurred.png"), blur_np)
+                save_png(os.path.join(out_dir, f"epoch{epoch}_resotred.png"), rest_np)
 
-                    axes[i, 2].imshow(output)
-                    axes[i, 2].set_title("Restored")
-
-                    for j in range(3):
-                        axes[i, j].axis("off")
-
-                plt.suptitle(f"Epoch {epoch}")
-                plt.tight_layout()
-                plt.show()
-                display_images = False
+                # EXR (true HDR linear data)
+                save_exr(os.path.join(out_dir, f"epoch{epoch}_gt.exr"), hdr_np)
+                save_exr(os.path.join(out_dir, f"epoch{epoch}_blurred.exr"), blur_np)
+                save_exr(os.path.join(out_dir, f"epoch{epoch}_restored.exr"), rest_np)
 
     lens.train()
     cnn.train()
@@ -167,7 +175,7 @@ scheduler = torch.optim.lr_scheduler.ExponentialLR(
 
 start_epoch = 0
 if cfg.should_resume:
-    start_epoch, _ = load_checkpoint(f"{cfg.check_point_dir}/ckpt_epoch_036.pt", cnn, lens, optimizer, scheduler)
+    start_epoch, _ = load_checkpoint(f"{cfg.check_point_dir}/ckpt_epoch_018.pt", cnn, lens, optimizer, scheduler)
     start_epoch += 1
 
 for epoch in range(start_epoch, cfg.epochs):
@@ -175,7 +183,6 @@ for epoch in range(start_epoch, cfg.epochs):
     for i, hdr in enumerate(train_loader):
 
         hdr = hdr.to(cfg.device)
-        # import ipdb; ipdb.set_trace()
         
         psfs_hr = lens().to(cfg.device) # calls forward() of lens torch module. Returns shape (3, H, W)
         psfs = sensor_model(
@@ -192,21 +199,22 @@ for epoch in range(start_epoch, cfg.epochs):
 
         # Regularization loss
         height_map_reg_loss = l2_laplacian_regularizer(lens.height)
+        height_map_scaled_loss = cfg.lambda_height_map * height_map_reg_loss
 
         # Final loss
-        loss = train_loss + cfg.lambda_height_map * height_map_reg_loss
+        loss = train_loss + height_map_scaled_loss
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         if i % 50 == 0:
-            print(f"Iteration number {i}, l2_loss: {train_loss}, regularizing loss: {height_map_reg_loss}, total loss: {loss}")
+            print(f"Iteration number {i}, l2_loss: {train_loss:.5f}, height map scaled loss: {height_map_scaled_loss:.5f}, total loss: {loss:.5f}")
 
     # Update learning rates
     scheduler.step()
 
-    val_loss = evaluate(lens, cnn, val_loader, cfg)
+    val_loss = evaluate(lens, cnn, val_loader, cfg, epoch)
     print(f"epoch={epoch} train_loss={loss.item():.5f} val_loss={val_loss:.5f}")
 
     save_checkpoint(cfg.check_point_dir, epoch, cnn, lens, optimizer, scheduler, val_loss)

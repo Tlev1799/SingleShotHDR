@@ -32,24 +32,26 @@ class DeconvLayer(nn.Module):
     def __init__(self, cin, cout, alpha=0.0):
         super().__init__()
 
-        scale = 2
-        k = 2 * scale - scale % 2  # 4
+        # scale = 2
+        # k = 2 * scale - scale % 2  # 4
 
-        self.deconv = nn.ConvTranspose2d(
-            cin, cout,
-            kernel_size=k,
-            stride=scale,
-            padding=1,
-            bias=False
-        )
+        # self.deconv = nn.ConvTranspose2d(
+        #     cin, cout,
+        #     kernel_size=k,
+        #     stride=scale,
+        #     padding=1,
+        #     bias=False
+        # )
+        self.deconv = nn.Conv2d(cin, cout, kernel_size=3, padding=1)
 
         # TF bilinear initialization
-        self.deconv.weight.data = bilinear_kernel(cin, cout, k)
+        #self.deconv.weight.data = bilinear_kernel(cin, cout, k)
 
         self.bn = nn.BatchNorm2d(cout)
         self.alpha = alpha
 
     def forward(self, x):
+        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
         x = self.deconv(x)
         x = self.bn(x)
         return torch.maximum(self.alpha * x, x)
@@ -59,9 +61,8 @@ class DeconvLayer(nn.Module):
 # Skip fusion layer (TF equivalent)
 # -------------------------
 class SkipConnectionLayer(nn.Module):
-    def __init__(self, channels, log_domain=True):
+    def __init__(self, channels):
         super().__init__()
-        self.log_domain = log_domain
 
         self.fuse = nn.Conv2d(channels * 2, channels, kernel_size=1, bias=True)
 
@@ -78,9 +79,6 @@ class SkipConnectionLayer(nn.Module):
         self.fuse.bias.data.zero_()
 
     def forward(self, x, skip):
-        if self.log_domain:
-            skip = torch.log((skip / 255.0) ** 2 + 1.0 / 255.0)
-
         x = torch.cat([x, skip], dim=1)
         return self.fuse(x)
 
@@ -212,3 +210,4 @@ class ReconNet(nn.Module):
     def forward(self, x):
         bottleneck, skips = self.encoder(x)
         return self.decoder(bottleneck, skips)
+    

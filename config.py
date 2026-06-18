@@ -11,6 +11,8 @@ class Config:
     optics_checkpoint = f"{check_point_dir}/optics"
     debug_checkpoint = f"{check_point_dir}/debug"
 
+    images_checkpoint = f"{check_point_dir}/images"
+
     image_size = 320
 
     batch_size = 8
