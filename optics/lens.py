@@ -27,7 +27,7 @@ def l2_laplacian_regularizer(height_map):
 
     return (lap ** 2).mean()
 
-def thin_lens_height(resolution, focal_length, pixel_pitch, n):
+def thin_lens_height(resolution, focal_length, sub_pixel_pitch, n):
     """
     Parabolic thin lens approximation:
     h(r) = r^2 / (2 * (n-1) * f)
@@ -39,8 +39,9 @@ def thin_lens_height(resolution, focal_length, pixel_pitch, n):
     Y, X = torch.meshgrid(coords, coords, indexing="ij")
 
     # Transform pixels to meters.
-    X = X * pixel_pitch
-    Y = Y * pixel_pitch
+    half_width = (resolution / 2) * sub_pixel_pitch
+    X = X * half_width
+    Y = Y * half_width
 
     r2 = X**2 + Y**2
 
@@ -52,16 +53,18 @@ def thin_lens_height(resolution, focal_length, pixel_pitch, n):
 class LearnableLens(nn.Module):
 
     def __init__(self, resolution, wavelengths, refractive_indices,
-                 pixel_pitch, focal_distance, height_noise, is_training=True):
+                 sub_pixel_pitch, focal_distance, height_noise, is_training=True):
 
         super().__init__()
 
         self.wavelengths = wavelengths
-        self.n = refractive_indices.to("cuda")  # ensure device match
-        self.pixel_pitch = pixel_pitch
+        self.sub_pixel_pitch = sub_pixel_pitch
         self.focal_distance = focal_distance
         self.height_noise = height_noise
         self.is_training = is_training
+
+        # Register refractive indices as a buffer for automatic device/state tracking
+        self.register_buffer("n", refractive_indices)
 
         # Initial values of height map will correspond to thinLens -and ideal surface lens.
         n_mean = float(self.n.mean().item())
@@ -69,7 +72,7 @@ class LearnableLens(nn.Module):
         h_init = thin_lens_height(
             resolution,
             focal_distance,
-            pixel_pitch,
+            sub_pixel_pitch,
             n_mean
         )
 
@@ -78,9 +81,12 @@ class LearnableLens(nn.Module):
 
         coords = torch.linspace(-1, 1, resolution)
         Y, X = torch.meshgrid(coords, coords, indexing="ij")
+        half_width = (resolution / 2) * sub_pixel_pitch
+        X_meters = X * half_width
+        Y_meters = Y * half_width
+        physical_radius = torch.sqrt(X_meters**2 + Y_meters**2)
 
-        radius = torch.sqrt(X**2 + Y**2)
-        self.register_buffer("pupil", (radius < 1.0).float())
+        self.register_buffer("pupil", (physical_radius < 1.0).float())
 
     @property
     def height(self):
@@ -108,7 +114,7 @@ class LearnableLens(nn.Module):
         out = fresnel_propagate(
             field,
             wavelength,
-            self.pixel_pitch,
+            self.sub_pixel_pitch,
             self.focal_distance
         )
 

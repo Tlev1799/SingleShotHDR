@@ -1,35 +1,35 @@
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from config import Config
 from datasets.hdr_dataset import HDRDataset
 from optics.lens import LearnableLens, l2_laplacian_regularizer
 from models.deconv_net import ReconNet
 from losses.l2_gamma import l2_gamma_batch
-from utils.image_ops import psf_convolve_rgb, save_exr, save_png, to_numpy_img, get_final_image
-from optics.sensor import sensor_model
+from utils.image_ops import psf_convolve_rgb, save_exr, save_png, to_numpy_img
+from optics.sensor import sensor_model, simulate_sensor_capture
 
 import numpy as np
-import random
+import glob
+import re
 
 import os
 os.chdir('/home/projects/sipl-prj10826/DeepOpticsHDR_PyTorch')
 
+global gt_image_singelton
+gt_image_singelton = True
+
 def evaluate(lens, cnn, loader, cfg, epoch):
+    global gt_image_singelton
     lens.eval()
     cnn.eval()
 
     lens.is_training = False # So height map noise is not added.
 
     total_loss = 0.0
-
     first_save = True
-
-    # TODO:
-    # CNN seems to be identical to original paper, problem might be in the handling of optics, psf calculation and that direction,
-    # Possible issue is also just the display method but I doubt it. More likely its a mismatch between their code and ours.
 
     with torch.no_grad():
         for hdr in loader:
@@ -43,20 +43,22 @@ def evaluate(lens, cnn, loader, cfg, epoch):
                 patch_size=cfg.image_size
             )
 
-            blurred = psf_convolve_rgb(hdr, psfs)
-            restored = cnn(blurred)
+            clipped_hdr = torch.clamp(hdr, cfg.hdr_min_val, cfg.hdr_max_val)
+            blurred_linear = psf_convolve_rgb(clipped_hdr, psfs)
+            x_in = simulate_sensor_capture(blurred_linear, min_val=cfg.hdr_min_val) # torch.clamp(blurred_linear + 1e-8, cfg.hdr_min_val, 1.0)
+            restored_hdr = cnn(x_in)
 
-            loss = l2_gamma_batch(restored, hdr)
+            loss = l2_gamma_batch(restored_hdr, hdr)
             total_loss += loss.item()
 
             if first_save:
                 first_save = False
-                index = random.randint(0, hdr.shape[0]-1)
-                import ipdb; ipdb.set_trace()
+                index = 0 # random.randint(0, hdr.shape[0]-1)
+                # import ipdb; ipdb.set_trace()
 
                 hdr_np = np.squeeze(to_numpy_img(hdr[index]))
-                blur_np = np.squeeze(to_numpy_img(blurred[index]))
-                rest_np = np.squeeze(to_numpy_img(restored[index]))
+                blur_np = np.squeeze(to_numpy_img(x_in[index]))
+                rest_np = np.squeeze(to_numpy_img(restored_hdr[index]))
 
                 # Gamma correction
                 hdr_np = np.power(np.maximum(hdr_np, 0.0), 0.5)
@@ -72,14 +74,16 @@ def evaluate(lens, cnn, loader, cfg, epoch):
                 # save_png(os.path.join(out_dir, f"epoch{epoch}_restored_exp3.png"), rest_np, -3)
 
                 # PNG (display-friendly) without exposure
-                save_png(os.path.join(out_dir, f"epoch{epoch}_gt.png"), hdr_np)
+                if gt_image_singelton:
+                    save_png(os.path.join(out_dir, f"epoch{epoch}_gt.png"), hdr_np)
+                    gt_image_singelton = False
                 save_png(os.path.join(out_dir, f"epoch{epoch}_blurred.png"), blur_np)
                 save_png(os.path.join(out_dir, f"epoch{epoch}_resotred.png"), rest_np)
 
                 # EXR (true HDR linear data)
-                save_exr(os.path.join(out_dir, f"epoch{epoch}_gt.exr"), hdr_np)
-                save_exr(os.path.join(out_dir, f"epoch{epoch}_blurred.exr"), blur_np)
-                save_exr(os.path.join(out_dir, f"epoch{epoch}_restored.exr"), rest_np)
+                # save_exr(os.path.join(out_dir, f"epoch{epoch}_gt.exr"), hdr_np)
+                # save_exr(os.path.join(out_dir, f"epoch{epoch}_blurred.exr"), blur_np)
+                # save_exr(os.path.join(out_dir, f"epoch{epoch}_restored.exr"), rest_np)
 
     lens.train()
     cnn.train()
@@ -150,7 +154,7 @@ lens = LearnableLens(
     cfg.lens_resolution,
     cfg.wavelengths,
     cfg.refractive_indices,
-    cfg.pixel_pitch,
+    cfg.sub_pixel_pitch,
     cfg.focal_distance,
     cfg.height_map_noise,
 ).to(cfg.device)
@@ -173,29 +177,88 @@ scheduler = torch.optim.lr_scheduler.ExponentialLR(
     gamma=0.99
 )
 
-start_epoch = 0
-if cfg.should_resume:
-    start_epoch, _ = load_checkpoint(f"{cfg.check_point_dir}/ckpt_epoch_018.pt", cnn, lens, optimizer, scheduler)
-    start_epoch += 1
+# TODO: This scheduler did not work as well for the full training set, try the original one again. 
 
+# NOTE: GEMINI suggested scheduler
+# scheduler = ReduceLROnPlateau(
+#     optimizer, 
+#     mode='min',       # We want to minimize loss
+#     factor=0.2,       # Multiply LR by 0.2 when stalling (e.g., 1e-4 -> 2e-5)
+#     patience=4,       # Wait 4 epochs of no improvement before dropping
+#     threshold=1e-4,   # Minimum change to qualify as an improvement
+#     min_lr=1e-6       # Don't let the learning rate drop below this floor
+# )
+
+# ==============================================================================
+# AUTOMATIC CHECKPOINT RESUMPTION LOGIC
+# ==============================================================================
+checkpoint_dir = cfg.check_point_dir
+os.makedirs(checkpoint_dir, exist_ok=True)
+
+# Scan for any checkpoint files matching your saving pattern
+checkpoint_pattern = os.path.join(checkpoint_dir, "ckpt_epoch_*.pt")
+checkpoint_files = glob.glob(checkpoint_pattern)
+
+start_epoch = 0
+if checkpoint_files:
+    # Helper to extract the integer epoch number from the filename string
+    # e.g., 'checkpoints/ckpt_epoch_073.pt' -> 73
+    def get_epoch_num(filepath):
+        match = re.search(r"epoch_?(\d+)", os.path.basename(filepath))
+        return int(match.group(1)) if match else -1
+
+    # Sort files naturally by epoch number to guarantee the true latest file is last
+    checkpoint_files.sort(key=get_epoch_num)
+    latest_checkpoint_path = checkpoint_files[-1]
+
+    print("-" * 60)
+    print("Automatic Resume Triggered!")
+    print(f"Loading latest checkpoint file: {latest_checkpoint_path}")
+
+    checkpoint_epoch, last_val_loss = load_checkpoint(latest_checkpoint_path, cnn, lens, optimizer, scheduler)
+    start_epoch = checkpoint_epoch + 1
+
+    print(f"Resuming pipeline execution from Epoch {start_epoch}, which had val_loss: {last_val_loss}")
+    print("-" * 60)
+
+else:
+    print("-" * 60)
+    print(f"No existing checkpoints found in '{checkpoint_dir}'.")
+    print("Starting a completely fresh training run from Epoch 0.")
+    print("-" * 60)
+
+
+# ==============================================================================
+# MAIN TRAINING LOOP
+# ==============================================================================
 for epoch in range(start_epoch, cfg.epochs):
+
+    cnn.train()
+    lens.train()
 
     for i, hdr in enumerate(train_loader):
 
         hdr = hdr.to(cfg.device)
         
-        psfs_hr = lens().to(cfg.device) # calls forward() of lens torch module. Returns shape (3, H, W)
+        psfs_hr = lens() # calls forward() of lens torch module. Returns shape (3, H, W)
         psfs = sensor_model(
             psfs_hr,
             sampling_factor=cfg.sampling_factor,
             patch_size=cfg.image_size
         )
 
-        blurred = psf_convolve_rgb(hdr, psfs)
-        restored = cnn(blurred)
+        # Clip hdr before convolving
+        clipped_hdr = torch.clamp(hdr, cfg.hdr_min_val, cfg.hdr_max_val)
+        blurred_linear = psf_convolve_rgb(clipped_hdr, psfs)
+
+        # Sensor Capture Simulation: Clamp to LDR [0, 1]
+        x_in = simulate_sensor_capture(blurred_linear, min_val=cfg.hdr_min_val) # torch.clamp(blurred_linear + 1e-8, cfg.hdr_min_val, 1.0)
+
+        # Process LDR image through the deconvolution network
+        restored_hdr = cnn(x_in)
 
         # Main training loss
-        train_loss = l2_gamma_batch(restored, hdr)
+        train_loss = l2_gamma_batch(restored_hdr, hdr)
 
         # Regularization loss
         height_map_reg_loss = l2_laplacian_regularizer(lens.height)
@@ -211,11 +274,13 @@ for epoch in range(start_epoch, cfg.epochs):
         if i % 50 == 0:
             print(f"Iteration number {i}, l2_loss: {train_loss:.5f}, height map scaled loss: {height_map_scaled_loss:.5f}, total loss: {loss:.5f}")
 
-    # Update learning rates
-    scheduler.step()
 
     val_loss = evaluate(lens, cnn, val_loader, cfg, epoch)
-    print(f"epoch={epoch} train_loss={loss.item():.5f} val_loss={val_loss:.5f}")
+    current_lr = optimizer.param_groups[0]['lr']
+    print(f"epoch={epoch} | train_loss={loss.item():.5f} | val_loss={val_loss:.5f} | lr={current_lr}")
+
+    # scheduler.step(val_loss)
+    scheduler.step()
 
     save_checkpoint(cfg.check_point_dir, epoch, cnn, lens, optimizer, scheduler, val_loss)
     if epoch % 5 == 0:

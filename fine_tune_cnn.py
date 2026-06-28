@@ -1,0 +1,1 @@
+# TODO: With the learned height map, train again, this time only update the cnn parameters, and include sensor noise.

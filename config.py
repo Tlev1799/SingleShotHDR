@@ -5,6 +5,10 @@ import torch
 class Config:
 
     data_root = "./datasets/train_dataset"
+    test_root = "./datasets/test_dataset"
+
+    test_checkpoint_dir = "./model_to_test"
+    test_images_output = f"{test_checkpoint_dir}/images"
 
     check_point_dir = "./checkpoints"
     #cnn_checkpoint = f"{check_point_dir}/cnns"
@@ -14,6 +18,8 @@ class Config:
     images_checkpoint = f"{check_point_dir}/images"
 
     image_size = 320
+    test_image_height = 787
+    test_image_width = 704
 
     batch_size = 8
 
@@ -51,7 +57,9 @@ class Config:
 
     sampling_factor = 4   # optical resolution / sensor resolution ratio
     lens_resolution = 320 * sampling_factor
+    sub_pixel_pitch = pixel_pitch / sampling_factor
 
-    should_resume = True
+    hdr_max_val = 64
+    hdr_min_val = 1e-5
 
     device = "cuda"
