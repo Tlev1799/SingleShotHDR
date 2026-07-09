@@ -18,6 +18,8 @@ import re
 import os
 os.chdir('/home/projects/sipl-prj10826/DeepOpticsHDR_PyTorch')
 
+# TODO: Add hdrplus dataset citation to the project report. https://www.hdrplusdata.org/dataset.html
+
 global gt_image_singelton
 gt_image_singelton = True
 

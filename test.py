@@ -17,10 +17,20 @@ from losses.l2_gamma import l2_gamma_batch
 from utils.image_ops import psf_convolve_rgb, save_png, to_numpy_img
 from optics.sensor import sensor_model, simulate_sensor_capture
 
+
+def calculate_psnr(img1, img2, max_val=1.0):
+    """Calculates PSNR between two images."""
+    mse = np.mean((img1 - img2) ** 2)
+    if mse == 0:
+        return float('inf')
+    return 20 * np.log10(max_val / np.sqrt(mse))
+
+
 def evaluate_and_generate_triplets(lens, cnn, loader, cfg, output_dir, max_triplets=50):
     """
     Evaluates the model on the provided data loader, prints the average 
-    l2_gamma loss, and saves side-by-side [GT | Blurred | Restored] triplet images.
+    l2_gamma loss, and saves side-by-side [GT | Blurred | Restored] triplet images
+    along with their PSNR values.
     """
     lens.eval()
     cnn.eval()
@@ -28,6 +38,7 @@ def evaluate_and_generate_triplets(lens, cnn, loader, cfg, output_dir, max_tripl
 
     total_loss = 0.0
     triplet_count = 0
+    psnr_values = []  # Array to hold PSNR metrics for saved triplets
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"\nEvaluating dataset ({len(loader.dataset)} images)...")
@@ -48,8 +59,6 @@ def evaluate_and_generate_triplets(lens, cnn, loader, cfg, output_dir, max_tripl
             blurred_linear = psf_convolve_rgb(clipped_hdr, psfs)
             x_in = simulate_sensor_capture(blurred_linear, min_val=cfg.hdr_min_val)
 
-            # import ipdb;ipdb.set_trace()
-            
             # Pass through the recovery network
             restored_hdr = cnn(x_in)
 
@@ -61,7 +70,6 @@ def evaluate_and_generate_triplets(lens, cnn, loader, cfg, output_dir, max_tripl
             if triplet_count < max_triplets:
                 batch_size = hdr.shape[0]
                 for sample_idx in range(batch_size):
-                    #import ipdb; ipdb.set_trace()
                     if triplet_count >= max_triplets:
                         break
 
@@ -75,8 +83,12 @@ def evaluate_and_generate_triplets(lens, cnn, loader, cfg, output_dir, max_tripl
                     blur_np = np.power(np.maximum(blur_np, 0.0), 0.5)
                     rest_np = np.power(np.maximum(rest_np, 0.0), 0.5)
 
+                    # --- PSNR Calculation ---
+                    # We calculate PSNR on the gamma-corrected images (max_val=1.0)
+                    current_psnr = calculate_psnr(hdr_np, rest_np, max_val=1.0)
+                    psnr_values.append(current_psnr)
+
                     # Concatenate horizontally: GT | Blurred | Restored
-                    # (to_numpy_img converts channels to HWC, so axis=1 stitches them side-by-side)
                     triplet_img = np.concatenate([hdr_np, blur_np, rest_np], axis=1)
 
                     # Save the composite triplet using your native save_png tool
@@ -87,11 +99,21 @@ def evaluate_and_generate_triplets(lens, cnn, loader, cfg, output_dir, max_tripl
                     triplet_count += 1
 
     avg_loss = total_loss / len(loader)
+    
+    # Save the PSNR array to disk
+    psnr_array = np.array(psnr_values)
+    psnr_save_path = os.path.join(output_dir, "psnr_values.npy")
+    np.save(psnr_save_path, psnr_array)
+    
+    avg_psnr = np.mean(psnr_array) if len(psnr_array) > 0 else 0.0
+
     print("\n" + "="*40)
     print("           TEST EVALUATION            ")
     print("="*40)
     print(f"Average Test Loss (l2_gamma): {avg_loss:.5f}")
+    print(f"Average PSNR (Saved Triplets): {avg_psnr:.2f} dB")
     print(f"Saved {triplet_count} visual triplets to: {output_dir}")
+    print(f"Saved PSNR array to: {psnr_save_path}")
     print("="*40 + "\n")
 
 
@@ -131,18 +153,8 @@ def main():
     cnn.load_state_dict(ckpt["cnn"])
     lens.load_state_dict(ckpt["lens"])
 
-    # TODO: Find appropriate dataset for testing, preferably of exr/hdr images, not tif.
-    # TODO: Use this: https://www.hdrplusdata.org/dataset.html
-    # TODO: Check what format this is (DNG?) and for size, use some crop to close size and then rescale algorithm.
-
-
-    # TODO: Search for more images for training dataset, emphasis on images with high contrast, like a dark road with a bright street light. Specifically check whether fairchild dataset was included in training, I currently do not recall. Regardless, the goal is to match their 60K images (we only have 18K).
-    # TODO: Write the script for "fine tuning" the cnn after we fixed the height map, and run it after retraining with the full 60K dataset.
-
     # 3. Recreate validation subset using your exact split specifications
     test_set = HDRTestDataset(cfg.test_root)
-    #train_len = int(cfg.data_split * len(dataset))
-    #val_len = int(len(dataset) - train_len)
 
     test_loader = DataLoader(
         test_set,

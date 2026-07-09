@@ -11,7 +11,7 @@ class Config:
     test_images_output = f"{test_checkpoint_dir}/images"
 
     check_point_dir = "./checkpoints"
-    #cnn_checkpoint = f"{check_point_dir}/cnns"
+    cnn_checkpoint = f"{check_point_dir}/cnns"
     optics_checkpoint = f"{check_point_dir}/optics"
     debug_checkpoint = f"{check_point_dir}/debug"
 
@@ -21,7 +21,7 @@ class Config:
     test_image_height = 787
     test_image_width = 704
 
-    batch_size = 8
+    batch_size = 16
 
     data_split = 0.995
 
