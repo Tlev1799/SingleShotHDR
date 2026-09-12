@@ -23,7 +23,7 @@ os.chdir('/home/projects/sipl-prj10826/DeepOpticsHDR_PyTorch')
 def parse_arguments():
     parser = argparse.ArgumentParser(description="SphereGAN Training Script")
     parser.add_argument('--base_run', action='store_true', help='Flag to train the base model.')
-    parser.add_argument('--lambda_gan', type=float, default=None, help='The weight parameter for the GAN loss.')
+    parser.add_argument('--lambda_gan', type=float, help='The weight parameter for the GAN loss.')
     return parser.parse_args()
 
 def save_checkpoint(save_path, epoch, cnn, lens, optimizer, scheduler, discriminator, opt_disc, disc_scheduler, lambda_gan, val_loss=None):
@@ -91,31 +91,28 @@ args = parse_arguments()
 cfg = Config()
 
 is_base_run = args.base_run
+lambda_gan = args.lambda_gan
+
+base_model_to_use = cfg.base_model_path.format(lambda_gan=lambda_gan)
 
 # ----------------------------------------------------------------------
 # RUN MODE DYNAMICS & CHECKPOINT ROUTING
 # ----------------------------------------------------------------------
 if is_base_run:
-    if os.path.exists(cfg.base_model_path):
-        print(f"[INFO] Base model already exists at {cfg.base_model_path}.")
+    if os.path.exists(base_model_to_use):
+        print(f"[INFO] Base model already exists at {base_model_to_use}.")
         print("If you intend to train a new base model, delete the file manually. Exiting.")
         sys.exit(0)
     
-    lambda_gan = 0.5 # TODO: Changed to run multiple lambda in simul.
     total_epochs = cfg.base_epochs
-    cfg.check_point_dir = f"./checkpoints_base_run_lambda_gan_{lambda_gan}_extreme" # TODO: Changed to run multiple lambda in simul.
+    cfg.check_point_dir = os.path.join(cfg.check_point_dir, f"base_model_lambdaGAN_{lambda_gan}")
+
 else:
-    if args.lambda_gan is None:
-        print("Error: --lambda_gan is required when not doing a base run.")
-        sys.exit(1)
-        
-    lambda_gan = args.lambda_gan
     total_epochs = cfg.branch_epochs
-    cfg.check_point_dir = f"./checkpoints_lambdaGAN_{lambda_gan}"
+    cfg.check_point_dir = os.path.join(cfg.check_point_dir, f"lambdaGAN_{lambda_gan}")
 
 
 # Get training dataset.
-print(cfg.data_root)
 dataset = HDRDataset(cfg.data_root)
 train_len = int(cfg.data_split * len(dataset))
 val_len = int(len(dataset) - train_len)
@@ -203,12 +200,14 @@ else:
             save_image(hm_scaled, os.path.join(cfg.check_point_dir, "initial_height_map.jpg"))
         lens.train()
     else:
-        if not os.path.exists(cfg.base_model_path):
-            print(f"Error: Required base model not found at {cfg.base_model_path}")
+        # When building on a trained network, we always use lambda_gan=0 as starting point.
+        base_model_to_use = cfg.base_model_path.format(lambda_gan=0.0)
+        if not os.path.exists(base_model_to_use):
+            print(f"Error: Required base model not found at {base_model_to_use}")
             sys.exit(1)
             
-        print(f"Branching Mode: Loading pre-trained base model weights from {cfg.base_model_path}")
-        ckpt = torch.load(cfg.base_model_path)
+        print(f"Branching Mode: Loading pre-trained base model weights from {base_model_to_use}")
+        ckpt = torch.load(base_model_to_use)
         cnn.load_state_dict(ckpt["cnn"])
         lens.load_state_dict(ckpt["lens"])
         print("Base weights successfully loaded. Fresh optimizers initialized. Starting branch at Epoch 0.")
@@ -228,38 +227,16 @@ for epoch in range(start_epoch, total_epochs):
 
     for i, hdr in enumerate(train_loader):
         hdr = hdr.to(cfg.device)
-        
-        if torch.isnan(hdr).any() or torch.isinf(hdr).any():
-            print("Corrupted input data found! Skipping")
-            continue
 
-        if hdr.min() < 0.0:
-            print("input has negative values!")
-
+        # Extract psf from current height map. 
         psfs_hr = lens() 
         psfs = sensor_model(psfs_hr, sampling_factor=cfg.sampling_factor, patch_size=cfg.image_size)
 
+        # Pass images through the network: phase mask + sensor + cnn
         clipped_hdr = torch.clamp(hdr, cfg.hdr_min_val, cfg.hdr_max_val)
         blurred_linear = psf_convolve_rgb(clipped_hdr, psfs)
-
         x_in = simulate_sensor_capture(blurred_linear, noise_std=cfg.sensor_noise_std, min_val=cfg.hdr_min_val) 
         restored_hdr = cnn(x_in)
-
-        # for index in range(len(restored_hdr)):
-        #     temp_img = restored_hdr[index]
-        #     if temp_img.min() < 0.0:
-        #         print("Negative value detected!")
-                # import ipdb; ipdb.set_trace()
-
-        # Clip negative values
-        # restored_hdr = torch.clamp(restored_hdr, min=cfg.hdr_min_val)
-        # restored_hdr = F.softplus(restored_hdr)
-
-        if torch.isnan(restored_hdr).any() or torch.isinf(restored_hdr).any():
-            print("Corrupted output data found! Skipping")
-
-        # if restored_hdr.min() < 0.0:
-        #     print("output has negative values!")
 
         # ----------------------------------------------------------------------
         #                           TRAIN DISCRIMINATOR

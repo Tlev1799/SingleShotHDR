@@ -112,14 +112,10 @@ class HDREvaluator:
 def parse_arguments():
     parser = argparse.ArgumentParser(description="SphereGAN Training Script")
     
-    # Lambda GAN is a mandatory parameter.
-    parser.add_argument(
-        'lambda_gan', 
-        type=float, 
-        help='The weight parameter (lambda_gan) for the GAN loss.'
-    )
+    parser.add_argument('lambda_gan', type=float, help='The weight parameter (lambda_gan) for the GAN loss.')
+    parser.add_argument('--base_run', action='store_true', help='Flag to train the base model.')
 
-    # New flag: Percentage of images to save (0.0 to 100.0)
+    # Percentage of images to save (0.0 to 100.0)
     parser.add_argument(
         '--save_jpg_percent', 
         type=float, 
@@ -138,23 +134,24 @@ def load_trained_network(path, cnn, lens, device):
 # Get lambda_gan of network to use.
 args = parse_arguments()
 lambda_gan = args.lambda_gan
-# lambda_gan = 0.0
+is_base_run = args.base_run
 
 # Get configuration.
 cfg = Config()
 
 save_prob = args.save_jpg_percent / 100.0  # Convert percentage to a 0.0-1.0 probability
 
-if save_prob > 0.0:
-    # Create a dedicated folder for these visual results
-    jpg_save_dir = cfg.RESULTS_DIR_FORMAT.format(lambda_gan=lambda_gan).replace(".pt", "_jpgs")
-    # jpg_save_dir = f"./trained_networks/base_model_l2_epoch100_lambda_gan_{lambda_gan}_jpgs"
-    os.makedirs(jpg_save_dir, exist_ok=True)
-    print(f"JPG saving enabled. Visual comparisons will be saved to: {jpg_save_dir}")
+if is_base_run:
+    trained_network_path = cfg.base_model_path.format(lambda_gan=lambda_gan)
+else:
+    trained_network_path = cfg.RESULTS_DIR_FORMAT.format(lambda_gan=lambda_gan)
+output_path_dir = trained_network_path.replace(".pt", "_jpgs")
+
+os.makedirs(output_path_dir, exist_ok=True)
+print(f"Visual results will be saved to: {output_path_dir}")
 
 # Get test dataset.
-test_set = HDRDataset(cfg.test_root) # temp_dataset_path)
-# test_set = HDRTestDataset(cfg.test_root)
+test_set = HDRTestDataset(cfg.test_root)
 
 # Create loader.
 test_loader = DataLoader(
@@ -179,8 +176,6 @@ lens = LearnableLens(
 cnn = ReconNet().to(cfg.device)
 
 # Load the trained network.
-trained_network_path = cfg.RESULTS_DIR_FORMAT.format(lambda_gan=lambda_gan)
-# trained_network_path = f"./trained_networks/base_model_l2_epoch100_lambda_gan_{lambda_gan}.pt"
 load_trained_network(trained_network_path, cnn, lens, cfg.device)
 
 ################# Start Evaluation #################
@@ -210,11 +205,6 @@ print(f"Starting evaluation on {len(test_set)} test images...")
 # ------------------------------------------------------------------
 # SAVE THE LEARNED PSF (COLOR-SEPARATED & LOG DOMAIN)
 # ------------------------------------------------------------------
-# if save_prob > 0.0:
-jpg_save_dir = cfg.RESULTS_DIR_FORMAT.format(lambda_gan=lambda_gan).replace(".pt", "_jpgs")
-# jpg_save_dir = f"./trained_networks/base_model_l2_epoch100_lambda_gan_{lambda_gan}_jpgs"
-os.makedirs(jpg_save_dir, exist_ok=True)
-
 with torch.no_grad():
     psfs_hr = lens() # Shape: (3, H, W)
     psfs = sensor_model(
@@ -223,7 +213,7 @@ with torch.no_grad():
                 patch_size=cfg.image_size
             )
     
-    # The paper visualizes the PSFs in the log domain to reveal faint distinct peaks
+    # Transfer to log domain.
     epsilon = 1e-6
     psf_normalized = psfs / (psfs.max() + epsilon)
     psf_log = torch.log10(psf_normalized + epsilon)
@@ -237,16 +227,16 @@ with torch.no_grad():
     psf_b = psf_log_scaled[2:3, :, :]
     
     # Save separately
-    save_image(psf_r, os.path.join(jpg_save_dir, f"psf_R_log_lambda_{lambda_gan}.jpg"))
-    save_image(psf_g, os.path.join(jpg_save_dir, f"psf_G_log_lambda_{lambda_gan}.jpg"))
-    save_image(psf_b, os.path.join(jpg_save_dir, f"psf_B_log_lambda_{lambda_gan}.jpg"))
+    save_image(psf_r, os.path.join(output_path_dir, f"psf_R_log_lambda_{lambda_gan}.jpg"))
+    save_image(psf_g, os.path.join(output_path_dir, f"psf_G_log_lambda_{lambda_gan}.jpg"))
+    save_image(psf_b, os.path.join(output_path_dir, f"psf_B_log_lambda_{lambda_gan}.jpg"))
 
     # Extract, normalize, and save the DOE height map as a grayscale image
     height_map = lens.doe_height.detach() 
     hm_scaled = (height_map - height_map.min()) / (height_map.max() - height_map.min() + epsilon)
-    save_image(hm_scaled, os.path.join(jpg_save_dir, "learned_height_map.jpg"))
+    save_image(hm_scaled, os.path.join(output_path_dir, "learned_height_map.jpg"))
     
-print(f"Saved color-separated log-domain PSFs to: {jpg_save_dir}")
+print(f"Saved color-separated log-domain PSFs to: {output_path_dir}")
 
 with torch.no_grad():
     for i, hdr in enumerate(test_loader):
@@ -255,7 +245,7 @@ with torch.no_grad():
         if torch.isnan(hdr).any() or torch.isinf(hdr).any():
             print("Corrupted input data found!")
         
-        # 1. Optical Forward Pass
+        # Extract psfs of the learned height map.
         psfs_hr = lens() 
         psfs = sensor_model(
             psfs_hr,
@@ -263,27 +253,13 @@ with torch.no_grad():
             patch_size=cfg.image_size
         )
 
-        # clipped_hdr = torch.clamp(hdr, min=0.0, max=1.5)
-        
+        # Pass images through the network.
         clipped_hdr = torch.clamp(hdr, cfg.hdr_min_val, cfg.hdr_max_val)
-        # blurred_linear = psf_convolve_rgb(clipped_hdr, psfs)
         blurred_linear = psf_convolve_rgb(clipped_hdr, psfs)
         x_in = simulate_sensor_capture(blurred_linear, min_val=cfg.hdr_min_val) 
-        
-        # 2. Digital Reconstruction
         restored_hdr = cnn(x_in)
 
-        # 1. Check if the network itself is outputting NaNs or a single flat number
-        for index in range(len(restored_hdr)):
-            temp_img = restored_hdr[index]
-            # print(f"Model Input {index} -> Min: {hdr[index].min().item():.4f}, Max: {hdr[index].max().item():.4f}, Has NaNs: {torch.isnan(hdr[index]).any().item()}")
-            # print(f"Model Output {index} -> Min: {temp_img.min().item():.4f}, Max: {temp_img.max().item():.4f}, Has NaNs: {torch.isnan(temp_img).any().item()}")
-
-        # Clip negative values
-        # restored_hdr = torch.clamp(restored_hdr, cfg.hdr_min_val)
-        
-        # 3. Evaluate Batch
-        # Passing cfg.hdr_max_val so the evaluator knows the bounds of your linear energy
+        # Evaluate
         batch_metrics = evaluator.evaluate(restored_hdr, clipped_hdr, max_val=cfg.hdr_max_val)
         
         for key in total_metrics:
@@ -309,7 +285,7 @@ with torch.no_grad():
                     # dim=2 is the width dimension (C, H, W)
                     comparison = torch.cat([t_vis[b], p_vis[b]], dim=2)
                     
-                    filename = os.path.join(jpg_save_dir, f"batch_{i:04d}_img_{b:02d}.jpg")
+                    filename = os.path.join(output_path_dir, f"batch_{i:04d}_img_{b:02d}.jpg")
                     save_image(comparison, filename)
         # ------------------------------------------------------------------
             
