@@ -1,4 +1,4 @@
-# Deep Optics HDR: SphereGAN Joint Training
+# Loss Function Design for End-to-End Optical Imaging Systems
 
 This repository contains the PyTorch implementation for jointly training a learnable physical phase mask (DOE) and a digital reconstruction CNN for single-shot HDR imaging. The training pipeline utilizes a Perception-Distortion tradeoff via SphereGAN.
 
@@ -56,6 +56,13 @@ You can run this command multiple times with different `--lambda_gan` values (e.
 ## Automatic Resumption and Checkpoints
 
 The script includes an automatic resume feature to protect against crashes or timeouts. 
+
+## References
+
+* Deep Optics for Single-Shot High-Dynamic-Range Imaging: https://arxiv.org/abs/1908.00620
+* The Perception-Distortion Tradeoff: https://arxiv.org/abs/1711.06077
+* Sphere Generative Adversarial Network Based on Geometric Moment Matching: https://arxiv.org/abs/1711.06077
+
 
 * Checkpoints are saved every 4 epochs into the directory specified by `cfg.check_point_dir`.
 * If a training run is interrupted, simply re-run the exact same command you used to start it.
