@@ -9,15 +9,12 @@ import numpy as np
 # -------------------------
 def bilinear_kernel(in_channels, out_channels, kernel_size):
     factor = (kernel_size + 1) // 2
-    if kernel_size % 2 == 1:
-        center = factor - 1
-    else:
-        center = factor - 0.5
+    center = factor - 1 if kernel_size % 2 == 1 else factor - 0.5
 
     og = np.ogrid[:kernel_size, :kernel_size]
     filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
 
-    weight = np.zeros((in_channels, out_channels, kernel_size, kernel_size), dtype=np.float32)
+    weight = np.zeros((out_channels, in_channels, kernel_size, kernel_size), dtype=np.float32)
 
     for i in range(min(in_channels, out_channels)):
         weight[i, i, :, :] = filt
@@ -32,20 +29,13 @@ class DeconvLayer(nn.Module):
     def __init__(self, cin, cout, alpha=0.0):
         super().__init__()
 
-        # scale = 2
-        # k = 2 * scale - scale % 2  # 4
+        # Use 3x3 convolution following interpolation, matching your working structure
+        self.deconv = nn.Conv2d(cin, cout, kernel_size=3, padding=1, bias=False)
 
-        # self.deconv = nn.ConvTranspose2d(
-        #     cin, cout,
-        #     kernel_size=k,
-        #     stride=scale,
-        #     padding=1,
-        #     bias=False
-        # )
-        self.deconv = nn.Conv2d(cin, cout, kernel_size=3, padding=1)
-
-        # TF bilinear initialization
-        #self.deconv.weight.data = bilinear_kernel(cin, cout, k)
+        # Initialize the 3x3 convolution weights with a bilinear kernel
+        # so it acts as a smooth pass-through instead of random noise
+        w = bilinear_kernel(cin, cout, 3)
+        self.deconv.weight.data = w
 
         self.bn = nn.BatchNorm2d(cout)
         self.alpha = alpha

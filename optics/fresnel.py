@@ -1,24 +1,24 @@
 import torch
-import torch.nn as nn
+# import torch.nn as nn
+import torch.nn.functional as F
 import torch.fft as fft
 
 
-def fresnel_propagate(field, wavelength, pixel_pitch, distance):
-
+def fresnel_propagate(field, Hf):
     H, W = field.shape[-2:]
-
-    fx = fft.fftfreq(W, d=pixel_pitch, device=field.device)
-    fy = fft.fftfreq(H, d=pixel_pitch, device=field.device)
-
-    FY, FX = torch.meshgrid(fy, fx, indexing="ij")
-
-    Hf = torch.exp(
-        -1j * torch.pi * wavelength * distance * (FX**2 + FY**2)
-    )
-
-    U = fft.fft2(field)
-
-    return fft.ifft2(U * Hf)
+    
+    pad_H = H // 4
+    pad_W = W // 4
+    
+    # Pad the field with zeros
+    padded_field = F.pad(field, (pad_W, pad_W, pad_H, pad_H), mode='constant', value=0)
+    
+    # Propagate in the padded domain
+    U = fft.fft2(padded_field)
+    out_padded = fft.ifft2(U * Hf)
+    
+    # Crop the padded margins back off
+    return out_padded[..., pad_H:-pad_H, pad_W:-pad_W]
 
 def circular_aperture(input_field, r_cutoff, pixel_pitch):
 
