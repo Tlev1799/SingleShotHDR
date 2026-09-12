@@ -15,4 +15,4 @@
 # sigmoid_a: Sigmoidal parameter 'a' mean and std.
 # jpeg_quality: Minimum JPEG quality
 
-./virtualcamera/virtualcamera -linearize 0 -imsize 320 320 3 -input_path /home/projects/sipl-prj10826/Datasets_Preperation/orig_datasets/test_raw -output_path /home/projects/sipl-prj10826/Datasets_Preperation/orig_datasets/test_processed_cpp -subimages 1 -cropscale 0.2 0.6 -clip 0.98 0.99 -noise 0.0 0.01 -hue 0.0 7.0 -sat 0.0 0.1 -sigmoid_n 0.9 0.1 -sigmoid_a 0.6 0.1 -jpeg_quality 30 --verbose
+./virtualcamera/virtualcamera -linearize 0 -imsize 320 320 3 -input_path path/to/input -output_path path/to/output -subimages 1 -cropscale 0.2 0.6 -clip 0.98 0.99 -noise 0.0 0.01 -hue 0.0 7.0 -sat 0.0 0.1 -sigmoid_n 0.9 0.1 -sigmoid_a 0.6 0.1 -jpeg_quality 30 --verbose
