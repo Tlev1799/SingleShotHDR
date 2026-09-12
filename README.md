@@ -19,7 +19,10 @@ This repository contains the PyTorch implementation for jointly training a learn
 
 ## Dataset Preparation
 
-The training HDR dataset should be placed at the path defined by `data_root` inside `config.py` file. 
+The training HDR dataset should be placed at the path defined by `data_root` inside `config.py` file.
+We have used the same dataset as used in reference [1]. See instructions there: https://github.com/computational-imaging/DeepOpticsHDR
+
+Then run `preprocess_training_data.sh`, after updating the paths.
 
 ## Training Pipeline
 
