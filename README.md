@@ -60,4 +60,4 @@ The script includes an automatic resume feature to protect against crashes or ti
 
 * Deep Optics for Single-Shot High-Dynamic-Range Imaging: https://arxiv.org/abs/1908.00620
 * The Perception-Distortion Tradeoff: https://arxiv.org/abs/1711.06077
-* Sphere Generative Adversarial Network Based on Geometric Moment Matching: https://arxiv.org/abs/1711.06077
+* Sphere Generative Adversarial Network Based on Geometric Moment Matching: [https://arxiv.org/abs/1711.06077](https://ieeexplore.ieee.org/document/8954070)
