@@ -11,7 +11,7 @@ class Config:
 
     base_epochs = 100
     branch_epochs = 100
-    base_model_path = "./trained_networks/base_model{lambda_gan}.pt"
+    base_model_path = "./trained_networks/base_model_lambda_gan_{lambda_gan}.pt"
     RESULTS_DIR_FORMAT = "./trained_networks/lambda_gan_{lambda_gan}.pt"
 
     image_size = 320
